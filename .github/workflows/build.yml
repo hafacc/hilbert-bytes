@@ -1,5 +1,5 @@
 # Continuous integration: lint, type-check, and test on every push and PR to
-# main. Also reused as the release gate via workflow_call (see release.yml).
+# main. Also reused as the release gate via workflow_call (see cut.yml).
 name: build
 
 on:
@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v7
