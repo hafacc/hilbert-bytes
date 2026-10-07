@@ -14,9 +14,9 @@ keywords = [
 ]
 
 [project.urls]
-homepage = "https://hafaio.github.io/hilbert-bytes"
-documentation = "https://hafaio.github.io/hilbert-bytes"
-repository = "https://github.com/hafaio/hilbert-bytes"
+homepage = "https://hafa.cc/hilbert-bytes"
+documentation = "https://hafa.cc/hilbert-bytes"
+repository = "https://github.com/hafacc/hilbert-bytes"
 
 [dependency-groups]
 dev = [
