@@ -1,8 +1,8 @@
 # Hilbert Bytes
 
-[![build](https://github.com/hafaio/hilbert-bytes/actions/workflows/build.yml/badge.svg)](https://github.com/hafaio/hilbert-bytes/actions/workflows/build.yml)
+[![build](https://github.com/hafacc/hilbert-bytes/actions/workflows/build.yml/badge.svg)](https://github.com/hafacc/hilbert-bytes/actions/workflows/build.yml)
 [![pypi](https://img.shields.io/pypi/v/hilbert-bytes)](https://pypi.org/project/hilbert-bytes/)
-[![docs](https://img.shields.io/badge/api-docs-blue)](https://hafaio.github.io/hilbert-bytes)
+[![docs](https://img.shields.io/badge/api-docs-blue)](https://hafa.cc/hilbert-bytes)
 
 Hilbert Bytes is a python library for converting to and from points in
 d-dimensions and their corresponding index on a hilbert curve. It's similar to
