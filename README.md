@@ -32,7 +32,7 @@ index_bytes = hilbert_bytes.encode(points_bytes)  # indices as big-endian ints
 new_points_bytes = hilbert_bytes.decode(index_bytes, dim)
 ```
 
-If you want the indices as multi-byte ints, you can can do a similar trick in reverse:
+If you want the indices as multi-byte ints, you can do a similar trick in reverse:
 
 ```py
 index_bytes = ...  # an array of big-endian ints
@@ -43,7 +43,8 @@ But note that this will only work if your index fits in 8 bytes
 
 ## Publishing
 
-Releases are cut with the `release` workflow, run manually from the Actions tab
-with a `patch`, `minor`, or `major` version bump. It bumps the version, uploads
-to PyPI via [trusted publishing](https://docs.pypi.org/trusted-publishers/), tags
-and creates a GitHub release, then builds and deploys the docs.
+Releases are cut with the `cut` workflow, run manually from the Actions tab with
+a `patch`, `minor`, or `major` version bump. It bumps the version and tags it,
+then starts the `release` workflow, which uploads to PyPI via
+[trusted publishing](https://docs.pypi.org/trusted-publishers/) and creates a
+GitHub release, and the `docs` workflow, which builds and deploys the docs.

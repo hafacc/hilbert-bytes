@@ -1,109 +1,107 @@
+"""Hilbert curve conversions on big-endian byte arrays."""
+
+from operator import index
+
 import numba as nb
 import numpy as np
 from numpy.typing import NDArray
 
-# NOTE in most of the numba code, update assignments, e.g. += or ^= fail, so
-# you'll see a lot of x = x + y
+# NOTE the signatures only match writable c-contiguous arrays, so the public
+# functions copy anything else before calling the compiled ones
 
 
-@nb.jit(nb.uint8[:, :](nb.uint8[:, :], nb.uint64), cache=True, nogil=True)
-def _right_shift(
-    binary: NDArray[np.uint8], k: int
-) -> NDArray[np.uint8]:  # pragma: no cover
-    nbytes = k // 8
-    if nbytes > 0:
-        new_binary = np.empty_like(binary)
-        new_binary[:, :nbytes] = 0
-        new_binary[:, nbytes:] = binary[:, :-nbytes]
-        binary = new_binary
-
-    nbits = k % 8
-    if nbits > 0:
-        new_binary = (binary >> nbits).astype("u1")
-        new_binary[:, 1:] = new_binary[:, 1:] + (binary[:, :-1] << (8 - nbits))
-        binary = new_binary
-    return binary
-
-
-@nb.jit(nb.uint8[:, ::1](nb.uint8[:, :]), cache=True, nogil=True)
-def _gray_encode(arr: NDArray[np.uint8]) -> NDArray[np.uint8]:  # pragma: no cover
-    return arr ^ _right_shift(arr, 1)
-
-
-@nb.jit(nb.uint8[:, ::1](nb.uint8[:, ::1]), cache=True, nogil=True)
-def _gray_decode(gray: NDArray[np.uint8]) -> NDArray[np.uint8]:  # pragma: no cover
-    # invert the gray code with a doubling shift-and-xor prefix scan
-    _, nbytes = gray.shape
-    total_bits = nbytes * 8
-    shift = 1
-    while shift < total_bits:
-        gray[:] = gray ^ _right_shift(gray, shift)
-        shift <<= 1
-    return gray
-
-
-@nb.jit(nb.void(nb.uint8[:], nb.uint8[:]), cache=True, nogil=True)
-def _transpose_bits(
-    inp: NDArray[np.uint8], out: NDArray[np.uint8]
+@nb.jit(nb.void(nb.uint8[:, :], nb.int64, nb.int64, nb.int64), cache=True, nogil=True)
+def _fold(
+    point: NDArray[np.uint8], dim: int, byte: int, bitmask: int
 ) -> None:  # pragma: no cover
-    """Transpose the bits in one bit array into another bit array."""
-    (nbytes,) = inp.shape
-    mask = np.uint8(128)
-    target: int = 0
-    for ibyte in inp:
-        byte = ibyte
-        for _ in range(8):
-            out[target] <<= 1
-            if byte & mask:
-                out[target] += 1
-            byte <<= 1
-            target += 1
-            target %= nbytes
+    """Invert or exchange the bits of a point below one bit of one dimension."""
+    _, nbytes = point.shape
+    low = bitmask - 1
+    if point[dim, byte] & bitmask:
+        # the bit is on, so invert the lower bits of the first dimension
+        point[0, byte] ^= low
+        for rest in range(byte + 1, nbytes):
+            point[0, rest] ^= 255
+    else:
+        # the bit is off, so exchange the lower bits with the first dimension
+        flip = (point[0, byte] ^ point[dim, byte]) & low
+        point[0, byte] ^= flip
+        point[dim, byte] ^= flip
+        for rest in range(byte + 1, nbytes):
+            flip = point[0, rest] ^ point[dim, rest]
+            point[0, rest] ^= flip
+            point[dim, rest] ^= flip
 
 
-@nb.jit(nb.uint8[:, ::1](nb.uint8[:, :]), cache=True, parallel=True, nogil=True)
-def _transpose_bits_broadcasted(
-    inp: NDArray[np.uint8],
-) -> NDArray[np.uint8]:  # pragma: no cover
-    """Transpose bits broadcasted over the leading dimension."""
-    num, nbytes = inp.shape
-    out = np.zeros((num, nbytes), "u1")
-    for i in nb.prange(num):
-        _transpose_bits(inp[i], out[i])
-    return out
-
-
-@nb.jit(nb.void(nb.uint8[:], nb.uint8[:]), cache=True, nogil=True)
-def _inv_transpose_bits(
-    inp: NDArray[np.uint8], out: NDArray[np.uint8]
+@nb.jit(nb.void(nb.uint8[:, :, ::1], nb.uint8[:, ::1]), cache=True, nogil=True)
+def _encode(
+    points: NDArray[np.uint8], indices: NDArray[np.uint8]
 ) -> None:  # pragma: no cover
-    (nbytes,) = inp.shape
-    mask = np.uint8(128)
-    source: int = 0
-    for ind in range(nbytes):
-        for _ in range(8):
-            out[ind] <<= 1
-            if inp[source] & mask:
-                out[ind] += 1
-            inp[source] <<= 1
-            source += 1
-            source %= nbytes
+    """Fill zeroed indices from points, overwriting the points."""
+    _, ndim, nbytes = points.shape
+    # numba doesn't support strict
+    for point, index_bytes in zip(points, indices):  # noqa: B905
+        for byte in range(nbytes):
+            for bit in range(8):
+                bitmask = 128 >> bit
+                for dim in range(ndim):
+                    _fold(point, dim, byte, bitmask)
+
+        # interleave the bits of the dimensions; the running xor undoes the
+        # gray code of the interleaved number
+        parity = 0
+        position = 0
+        for byte in range(nbytes):
+            for bit in range(8):
+                for dim in range(ndim):
+                    parity ^= (point[dim, byte] >> (7 - bit)) & 1
+                    index_bytes[position >> 3] |= parity << (7 - (position & 7))
+                    position += 1
 
 
-@nb.jit(nb.uint8[:, ::1](nb.uint8[:, :]), cache=True, parallel=True, nogil=True)
-def _inv_transpose_bits_broadcasted(
-    inp: NDArray[np.uint8],
-) -> NDArray[np.uint8]:  # pragma: no cover
-    """Transpose bits but broadcasted over the leading dimension."""
-    num, nbytes = inp.shape
-    out = np.zeros((num, nbytes), "u1")
-    for i in nb.prange(num):
-        _inv_transpose_bits(inp[i], out[i])
-    return out
+@nb.jit(nb.void(nb.uint8[:, ::1], nb.uint8[:, :, ::1]), cache=True, nogil=True)
+def _decode(
+    indices: NDArray[np.uint8], points: NDArray[np.uint8]
+) -> None:  # pragma: no cover
+    """Fill zeroed points from indices."""
+    _, ndim, nbytes = points.shape
+    # numba doesn't support strict
+    for index_bytes, point in zip(indices, points):  # noqa: B905
+        # gray code the index while dealing its bits out to the dimensions
+        previous = 0
+        position = 0
+        for index_byte in index_bytes:
+            for bit in range(8):
+                current = (index_byte >> (7 - bit)) & 1
+                depth, dim = divmod(position, ndim)
+                point[dim, depth >> 3] |= (current ^ previous) << (7 - (depth & 7))
+                previous = current
+                position += 1
+
+        for byte in range(nbytes - 1, -1, -1):
+            for bit in range(8):
+                bitmask = 1 << bit
+                for dim in range(ndim - 1, -1, -1):
+                    _fold(point, dim, byte, bitmask)
 
 
-@nb.jit(nb.uint8[:, ::1](nb.uint8[:, :, :]), cache=True, nogil=True)
-def encode(points: NDArray[np.uint8]) -> NDArray[np.uint8]:  # pragma: no cover
+def _as_bytes(array: NDArray[np.uint8], name: str, ndim: int) -> NDArray[np.uint8]:
+    """Check that an argument is a uint8 array with ndim dimensions."""
+    result = np.asarray(array)
+    if result.dtype != np.uint8:
+        raise TypeError(
+            f"{name} must have dtype uint8, but got {result.dtype}; cast wider "
+            'integers to big-endian and view them as bytes, e.g. `.astype(">u8").view("u1")`'
+        )
+    elif result.ndim != ndim:
+        raise ValueError(
+            f"{name} must have {ndim} dimensions, but got shape {result.shape}"
+        )
+    else:
+        return result
+
+
+def encode(points: NDArray[np.uint8]) -> NDArray[np.uint8]:
     """Encode d-dimensional points into their indices on a hilbert curve.
 
     This function takes points in a d-dimensional space, and converts them to
@@ -112,8 +110,8 @@ def encode(points: NDArray[np.uint8]) -> NDArray[np.uint8]:  # pragma: no cover
 
     Example
     -------
-    If you want to use this native multi-byte integers, you can first cast them
-    to a big-endian variant, then view it as bytes.
+    If you want to use this with native multi-byte integers, you can first cast
+    them to a big-endian variant, then view it as bytes.
 
     ::
 
@@ -132,54 +130,24 @@ def encode(points: NDArray[np.uint8]) -> NDArray[np.uint8]:  # pragma: no cover
     indices : (n, dp)
         A collection of n big-endian unsigned integers that correspond to the
         index along the hilbert-curve for the input points.
+
+    Raises
+    ------
+    TypeError
+        If `points` isn't a uint8 array.
+    ValueError
+        If `points` doesn't have three dimensions.
     """
-    points = points.copy()
-    num, ndim, nbytes = points.shape
-
-    # iterate forwards through the bytes and bits
-    for byte in range(nbytes):
-        for bit in range(8):
-            bitmask = 1 << (7 - bit)
-            # iterate forwards through the dimensions.
-            for dim in range(ndim):
-                # identify which ones have this bit active
-                mask = points[..., dim, byte] & bitmask
-                # this is fully broadcast across all bits
-                full_mask = np.where(mask, np.uint8(255), np.uint8(0))
-                # this is only broadcast through the lower bits
-                partial_mask = (mask - 1) & full_mask
-                not_partial_mask = bitmask - 1 - partial_mask
-
-                # where this bit is on, invert the 0 dimension for lower bits
-                points[:, 0, byte + 1 :] = points[:, 0, byte + 1 :] ^ full_mask[:, None]
-                points[:, 0, byte] = points[:, 0, byte] ^ partial_mask
-
-                # where the bit is off, exchange the lower bits with the 0 dimension
-                # first invert the bytes
-                to_flip = ~full_mask[:, None] & (
-                    points[:, 0, byte + 1 :] ^ points[:, dim, byte + 1 :]
-                )
-                points[:, dim, byte + 1 :] = points[:, dim, byte + 1 :] ^ to_flip
-                points[:, 0, byte + 1 :] = points[:, 0, byte + 1 :] ^ to_flip
-
-                # then the bits
-                to_flip = not_partial_mask & (points[:, 0, byte] ^ points[:, dim, byte])
-                points[:, dim, byte] = points[:, dim, byte] ^ to_flip
-                points[:, 0, byte] = points[:, 0, byte] ^ to_flip
-
-    # now transpose
-    byte_transposed = np.swapaxes(points, 1, 2).copy().reshape((num * nbytes, ndim))
-    bit_transposed = _inv_transpose_bits_broadcasted(byte_transposed)
-
-    # decode grey encoding
-    return _gray_decode(bit_transposed.reshape((num, nbytes * ndim)))
+    # always copy because the compiled loop overwrites its input
+    work = np.array(_as_bytes(points, "points", 3), order="C")
+    num, ndim, nbytes = work.shape
+    indices = np.zeros((num, ndim * nbytes), np.uint8)
+    _encode(work, indices)
+    return indices
 
 
-@nb.jit(nb.uint8[:, ::1, :](nb.uint8[:, :], nb.int64), cache=True, nogil=True)
-def decode(
-    indices: NDArray[np.uint8], ndim: int
-) -> NDArray[np.uint8]:  # pragma: no cover
-    """Decode dp-dimensional indices into d-dimensional points.
+def decode(indices: NDArray[np.uint8], ndim: int) -> NDArray[np.uint8]:
+    """Decode dp-byte indices into d-dimensional points.
 
     This function takes indices on the hilbert curve, and the output dimension
     and converts them to their corresponding points. All numbers are represented
@@ -192,8 +160,8 @@ def decode(
 
     Example
     -------
-    If you want to use this native multi-byte integers, you can first cast them
-    to a big-endian variant, then view it as bytes.
+    If you want to use this with native multi-byte integers, you can first cast
+    them to a big-endian variant, then view it as bytes.
 
     ::
 
@@ -215,51 +183,25 @@ def decode(
     points : (n, d, p)
         A collection of n d-dimensional points that correspond to the indices
         along the hilbert-curve.
+
+    Raises
+    ------
+    TypeError
+        If `indices` isn't a uint8 array, or `ndim` isn't an integer.
+    ValueError
+        If `indices` doesn't have two dimensions, or `ndim` isn't positive or
+        doesn't divide dp.
     """
-    num, ntotbytes = indices.shape
-    if ntotbytes % ndim != 0:
+    num_dims = index(ndim)
+    if num_dims < 1:
+        raise ValueError(f"ndim must be positive, but got {num_dims}")
+    source = np.require(_as_bytes(indices, "indices", 2), requirements=["C", "W"])
+    num, total_bytes = source.shape
+    nbytes, extra = divmod(total_bytes, num_dims)
+    if extra:
         raise ValueError(
-            f"num_dims ({ndim}) must evenly divide byte dimension ({ntotbytes})"
+            f"ndim ({num_dims}) must evenly divide the number of index bytes ({total_bytes})"
         )
-    nbytes = ntotbytes // ndim
-
-    # gray-code the bytes
-    init_gray = _gray_encode(indices)
-
-    # transpose the bits
-    transposed = _transpose_bits_broadcasted(init_gray.reshape((num * nbytes, ndim)))
-    gray = np.swapaxes(transposed.reshape((num, nbytes, ndim)), 1, 2)
-
-    # iterate backward through whole bytes
-    for byte in range(nbytes - 1, -1, -1):
-        # iterate through the bits
-        for bit in range(7, -1, -1):
-            bitmask = 1 << (7 - bit)
-            # Iterate backwards through the dimensions.
-            for dim in range(ndim - 1, -1, -1):
-                # Identify which ones have this bit active.
-                mask = gray[:, dim, byte] & bitmask
-                # this is fully broadcast across all bits
-                full_mask = np.where(mask, np.uint8(255), np.uint8(0))
-                # this is only broadcast through the lower bits
-                partial_mask = (mask - 1) & full_mask
-                not_partial_mask = bitmask - 1 - partial_mask
-
-                # where this bit is on, invert the 0 dimension for lower bits.
-                gray[:, 0, byte + 1 :] = gray[:, 0, byte + 1 :] ^ full_mask[:, None]
-                gray[:, 0, byte] = gray[:, 0, byte] ^ partial_mask
-
-                # where the bit is off, exchange the lower bits with the 0 dimension.
-                # first do the full bytes
-                to_flip = ~full_mask[:, None] & (
-                    gray[:, 0, byte + 1 :] ^ gray[:, dim, byte + 1 :]
-                )
-                gray[:, dim, byte + 1 :] = gray[:, dim, byte + 1 :] ^ to_flip
-                gray[:, 0, byte + 1 :] = gray[:, 0, byte + 1 :] ^ to_flip
-
-                # then do the partial bits
-                to_flip = not_partial_mask & (gray[:, 0, byte] ^ gray[..., dim, byte])
-                gray[:, dim, byte] = gray[:, dim, byte] ^ to_flip
-                gray[:, 0, byte] = gray[:, 0, byte] ^ to_flip
-
-    return gray
+    points = np.zeros((num, num_dims, nbytes), np.uint8)
+    _decode(source, points)
+    return points

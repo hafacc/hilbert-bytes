@@ -41,14 +41,12 @@ strict = ["hilbert_bytes", "tests"]
 
 [tool.ruff.lint]
 extend-select = ["I", "D", "A", "B", "W", "PL", "UP", "FIX"]
-# stub type params read fine unprefixed
-ignore = ["PYI001"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
 [tool.pytest.ini_options]
-addopts = "--cov --cov-report term-missing"
+addopts = "--cov --cov-report term-missing --cov-fail-under 100"
 
 [tool.uv]
 keyring-provider = "subprocess"
